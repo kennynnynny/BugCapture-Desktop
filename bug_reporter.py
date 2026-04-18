@@ -13,9 +13,9 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QSlider, QFileDialog, QMessageBox,
     QScrollArea, QListWidget, QListWidgetItem, QSizePolicy
 )
-from PySide6.QtCore import QThread, Signal, QTimer, Qt
+from PySide6.QtCore import QSize, QThread, Signal, QTimer, Qt
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PySide6.QtGui import QPixmap, QImage, QKeyEvent
+from PySide6.QtGui import QPixmap, QImage, QKeyEvent, QIcon
 
 CORE_UI_COLORS = {
     "bg_page": "#F9FAFB",
@@ -280,6 +280,7 @@ class MainWindow(QMainWindow):
         self._setup_audio()
         self._apply_styles()
         self._load_existing_screenshots()
+        self._slider_dragging = False
 
     def _create_dirs(self):
         """Создание необходимых папок."""
@@ -320,6 +321,8 @@ class MainWindow(QMainWindow):
         self.slider.sliderMoved.connect(self._on_sliderMoved)
         self.slider.sliderPressed.connect(self._on_sliderPressed)
         self.slider.sliderReleased.connect(self._on_sliderReleased)
+        self.slider.valueChanged.connect(self._on_sliderValueChanged)
+        self._slider_dragging = False
         layout.addWidget(self.slider)
 
         controls_layout = QHBoxLayout()
@@ -344,29 +347,13 @@ class MainWindow(QMainWindow):
 
         gallery_layout = QHBoxLayout()
 
-        self.prev_screenshot_btn = QPushButton("◀")
-        self.prev_screenshot_btn.setObjectName("nav")
-        self.prev_screenshot_btn.setFixedWidth(40)
-        self.prev_screenshot_btn.clicked.connect(self._prev_screenshot)
-        gallery_layout.addWidget(self.prev_screenshot_btn)
-
-        self.gallery_label = QLabel("Нет скриншотов")
-        self.gallery_label.setAlignment(Qt.AlignCenter)
-        self.gallery_label.setMinimumHeight(80)
-        self.gallery_label.setScaledContents(True)
-        self.gallery_label.setObjectName("gallery")
-        gallery_layout.addWidget(self.gallery_label, 1)
-
-        self.next_screenshot_btn = QPushButton("▶")
-        self.next_screenshot_btn.setObjectName("nav")
-        self.next_screenshot_btn.setFixedWidth(40)
-        self.next_screenshot_btn.clicked.connect(self._next_screenshot)
-        gallery_layout.addWidget(self.next_screenshot_btn)
-
-        self.screenshot_count_label = QLabel("0/0")
-        self.screenshot_count_label.setObjectName("caption")
-        self.screenshot_count_label.setFixedWidth(40)
-        gallery_layout.addWidget(self.screenshot_count_label)
+        self.screenshot_list = QListWidget()
+        self.screenshot_list.setViewMode(QListWidget.IconMode)
+        self.screenshot_list.setIconSize(QSize(160, 80))
+        self.screenshot_list.setSpacing(8)
+        self.screenshot_list.setMinimumHeight(100)
+        self.screenshot_list.itemClicked.connect(self._on_screenshot_item_clicked)
+        gallery_layout.addWidget(self.screenshot_list, 1)
 
         layout.addLayout(gallery_layout)
 
@@ -377,6 +364,7 @@ class MainWindow(QMainWindow):
         """Настройка аудиоплеера."""
         self.media_player = QMediaPlayer()
         self.audio_output = QAudioOutput()
+        self.audio_output.setVolume(0.8)
         self.media_player.setAudioOutput(self.audio_output)
 
     def _apply_styles(self):
@@ -566,12 +554,14 @@ class MainWindow(QMainWindow):
 
     def _on_sliderPressed(self):
         """Пауза при начале перемотки."""
+        self._slider_dragging = True
         if self.is_playing:
             self.video_worker.pause()
             self.media_player.pause()
 
     def _on_sliderReleased(self):
-        """Возобновл��ни�� после перемотки."""
+        """Возобновление после перемотки."""
+        self._slider_dragging = False
         if self.is_playing:
             self.video_worker.resume()
             if self.temp_audio_path:
@@ -585,6 +575,18 @@ class MainWindow(QMainWindow):
 
         if self.temp_audio_path:
             self.media_player.setPosition(position_ms)
+            if self.is_playing:
+                self.media_player.play()
+
+    def _on_sliderValueChanged(self, value: int):
+        """Перемотка при изменении значения слайдера."""
+        if not self._slider_dragging:
+            return
+        if self.video_worker:
+            self.video_worker.set_position(value)
+        if self.temp_audio_path:
+            self.media_player.setPosition(value)
+        self._update_time_label(value)
 
     def _update_slider_position(self):
         """Обновление позиции ползунка."""
@@ -634,30 +636,28 @@ class MainWindow(QMainWindow):
         self.screenshots.append(save_path)
         self.current_screenshot_index = len(self.screenshots) - 1
         self._update_gallery()
-
         self._flash_border()
+
+    def _on_screenshot_item_clicked(self, item: QListWidgetItem):
+        """Обработка клика по скриншоту в списке."""
+        path = item.data(Qt.UserRole)
+        if path:
+            index = self.screenshots.index(path)
+            self.current_screenshot_index = index
 
     def _update_gallery(self):
         """Обновление галереи скриншотов."""
         if not self.screenshots:
-            self.gallery_label.setText("Нет скриншотов")
-            self.screenshot_count_label.setText("0/0")
-            self.prev_screenshot_btn.setEnabled(False)
-            self.next_screenshot_btn.setEnabled(False)
+            self.screenshot_list.clear()
             return
 
-        self.prev_screenshot_btn.setEnabled(True)
-        self.next_screenshot_btn.setEnabled(True)
+        self.screenshot_list.clear()
+        for path in self.screenshots:
+            item = QListWidgetItem(QIcon(path), "")
+            item.setData(Qt.UserRole, path)
+            self.screenshot_list.addItem(item)
 
-        idx = self.current_screenshot_index + 1
-        total = len(self.screenshots)
-        self.screenshot_count_label.setText(f"{idx}/{total}")
-
-        pixmap = QPixmap(self.screenshots[self.current_screenshot_index])
-        scaled = pixmap.scaled(
-            160, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
-        self.gallery_label.setPixmap(scaled)
+        self.screenshot_list.setCurrentRow(self.current_screenshot_index)
 
     def _prev_screenshot(self):
         """Предыдущий скриншот."""
